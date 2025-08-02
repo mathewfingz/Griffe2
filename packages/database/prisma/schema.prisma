@@ -1,0 +1,867 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector")]
+}
+
+// ============================================================================
+// USER MANAGEMENT & AUTHENTICATION
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  email     String   @unique
+  firstName String?
+  lastName  String?
+  imageUrl  String?
+  role      UserRole @default(VENDOR)
+  
+  // Vendor relationship
+  vendor   Vendor? @relation(fields: [vendorId], references: [id])
+  vendorId String?
+  
+  // Staff permissions
+  permissions Permission[]
+  
+  // Activity tracking
+  lastActiveAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Audit logs
+  auditLogs AuditLog[]
+  
+  // AI Assistant
+  chatSessions ChatSession[]
+  
+  @@map("users")
+}
+
+model Vendor {
+  id            String       @id @default(cuid())
+  name          String
+  slug          String       @unique
+  email         String
+  phone         String?
+  website       String?
+  description   String?
+  logo          String?
+  branding      Json? // colors, fonts, etc.
+  
+  // Business details
+  businessType  BusinessType @default(INDIVIDUAL)
+  taxId         String?
+  address       Json? // street, city, country, etc.
+  
+  // Subscription & billing
+  subscription    Subscription?
+  stripeAccountId String?       @unique
+  
+  // Configuration
+  settings Json @default("{}")
+  
+  // Multi-tenant isolation
+  users        User[]
+  products     Product[]
+  orders       Order[]
+  customers    Customer[]
+  collections  Collection[]
+  discounts    Discount[]
+  importJobs   ImportJob[]
+  chatSessions ChatSession[]
+  warehouses   Warehouse[]
+  analytics    Analytics[]
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("vendors")
+}
+
+model Permission {
+  id       String           @id @default(cuid())
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId   String
+  module   PermissionModule
+  actions  PermissionAction[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([userId, module])
+  @@map("permissions")
+}
+
+model Subscription {
+  id       String           @id @default(cuid())
+  vendor   Vendor           @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String           @unique
+  
+  plan            SubscriptionPlan @default(STARTER)
+  status          SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId String?
+  stripePriceId   String?
+  
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean @default(false)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("subscriptions")
+}
+
+// ============================================================================
+// PRODUCT CATALOG
+// ============================================================================
+
+model Product {
+  id          String        @id @default(cuid())
+  vendor      Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId    String
+  
+  title       String
+  description String?
+  slug        String
+  sku         String?
+  
+  // Pricing
+  price       Decimal       @db.Decimal(10, 2)
+  compareAtPrice Decimal?   @db.Decimal(10, 2)
+  costPerItem    Decimal?   @db.Decimal(10, 2)
+  
+  // Inventory
+  trackQuantity Boolean      @default(true)
+  inventory     Inventory[]
+  
+  // Media
+  images      ProductImage[]
+  
+  // Organization
+  collections ProductCollection[]
+  tags        ProductTag[]
+  
+  // Variants
+  variants    ProductVariant[]
+  options     ProductOption[]
+  
+  // SEO & Marketing
+  seoTitle       String?
+  seoDescription String?
+  metafields     Json @default("{}")
+  
+  // Status
+  status      ProductStatus @default(DRAFT)
+  publishedAt DateTime?
+  
+  // Shopify integration
+  shopifyId      String?
+  shopifyHandle  String?
+  lastSyncAt     DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([vendorId, slug])
+  @@unique([vendorId, sku])
+  @@map("products")
+}
+
+model ProductVariant {
+  id        String  @id @default(cuid())
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId String
+  
+  title     String
+  sku       String?
+  barcode   String?
+  
+  // Pricing
+  price       Decimal  @db.Decimal(10, 2)
+  compareAtPrice Decimal? @db.Decimal(10, 2)
+  costPerItem    Decimal? @db.Decimal(10, 2)
+  
+  // Inventory
+  inventory Inventory[]
+  
+  // Variant options (size, color, etc.)
+  optionValues VariantOptionValue[]
+  
+  // Media
+  image String?
+  
+  // Physical properties
+  weight    Decimal? @db.Decimal(8, 3)
+  weightUnit WeightUnit @default(GRAMS)
+  
+  // Shopify integration
+  shopifyId String?
+  
+  // Order items
+  orderItems OrderItem[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([productId, sku])
+  @@map("product_variants")
+}
+
+model ProductOption {
+  id        String  @id @default(cuid())
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId String
+  
+  name     String // Color, Size, Material
+  position Int    @default(1)
+  
+  values OptionValue[]
+  
+  @@unique([productId, name])
+  @@map("product_options")
+}
+
+model OptionValue {
+  id       String        @id @default(cuid())
+  option   ProductOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  optionId String
+  
+  value    String // Red, Large, Cotton
+  position Int    @default(1)
+  
+  variantOptionValues VariantOptionValue[]
+  
+  @@unique([optionId, value])
+  @@map("option_values")
+}
+
+model VariantOptionValue {
+  id              String         @id @default(cuid())
+  variant         ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  variantId       String
+  optionValue     OptionValue    @relation(fields: [optionValueId], references: [id], onDelete: Cascade)
+  optionValueId   String
+  
+  @@unique([variantId, optionValueId])
+  @@map("variant_option_values")
+}
+
+model ProductImage {
+  id        String  @id @default(cuid())
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId String
+  
+  url       String
+  altText   String?
+  position  Int     @default(1)
+  
+  createdAt DateTime @default(now())
+  
+  @@map("product_images")
+}
+
+model Collection {
+  id          String @id @default(cuid())
+  vendor      Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId    String
+  
+  title       String
+  description String?
+  slug        String
+  image       String?
+  
+  // Hierarchy
+  parent     Collection? @relation("CollectionHierarchy", fields: [parentId], references: [id])
+  parentId   String?
+  children   Collection[] @relation("CollectionHierarchy")
+  
+  // Products
+  products ProductCollection[]
+  
+  // SEO
+  seoTitle       String?
+  seoDescription String?
+  
+  // Shopify integration
+  shopifyId String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([vendorId, slug])
+  @@map("collections")
+}
+
+model ProductCollection {
+  id           String     @id @default(cuid())
+  product      Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId    String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  collectionId String
+  
+  position Int @default(1)
+  
+  @@unique([productId, collectionId])
+  @@map("product_collections")
+}
+
+model ProductTag {
+  id        String  @id @default(cuid())
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId String
+  
+  name String
+  
+  @@unique([productId, name])
+  @@map("product_tags")
+}
+
+// ============================================================================
+// INVENTORY MANAGEMENT
+// ============================================================================
+
+model Warehouse {
+  id        String @id @default(cuid())
+  vendor    Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId  String
+  
+  name     String
+  code     String @unique
+  address  Json?
+  
+  inventory Inventory[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("warehouses")
+}
+
+model Inventory {
+  id          String  @id @default(cuid())
+  product     Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   String?
+  variant     ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  variantId   String?
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  warehouseId String
+  
+  quantity    Int @default(0)
+  reserved    Int @default(0) // quantity reserved for pending orders
+  available   Int @default(0) // quantity - reserved
+  
+  lowStockThreshold Int @default(5)
+  
+  updatedAt DateTime @updatedAt
+  
+  @@unique([productId, warehouseId])
+  @@unique([variantId, warehouseId])
+  @@map("inventory")
+}
+
+// ============================================================================
+// ORDER MANAGEMENT
+// ============================================================================
+
+model Customer {
+  id       String @id @default(cuid())
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String
+  
+  email      String
+  firstName  String?
+  lastName   String?
+  phone      String?
+  
+  // Default addresses
+  defaultBillingAddress  Json?
+  defaultShippingAddress Json?
+  
+  // Marketing
+  acceptsMarketing Boolean @default(false)
+  
+  // Customer segments
+  tags String[] @default([])
+  
+  // Stats
+  totalSpent      Decimal @default(0) @db.Decimal(10, 2)
+  ordersCount     Int     @default(0)
+  lastOrderAt     DateTime?
+  
+  // Orders
+  orders Order[]
+  
+  // Shopify integration
+  shopifyId String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([vendorId, email])
+  @@map("customers")
+}
+
+model Order {
+  id       String @id @default(cuid())
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String
+  
+  orderNumber String @unique
+  
+  // Customer
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  customerId String?
+  
+  // Contact info (for guest checkouts)
+  email String
+  phone String?
+  
+  // Addresses
+  billingAddress  Json
+  shippingAddress Json
+  
+  // Financial
+  subtotal     Decimal @db.Decimal(10, 2)
+  totalTax     Decimal @default(0) @db.Decimal(10, 2)
+  totalDiscount Decimal @default(0) @db.Decimal(10, 2)
+  shippingCost Decimal @default(0) @db.Decimal(10, 2)
+  total        Decimal @db.Decimal(10, 2)
+  
+  // Status
+  status           OrderStatus @default(PENDING)
+  fulfillmentStatus FulfillmentStatus @default(UNFULFILLED)
+  paymentStatus    PaymentStatus @default(PENDING)
+  
+  // Payment
+  paymentMethod    String?
+  stripePaymentId  String?
+  
+  // Commission
+  platformFee      Decimal @default(0) @db.Decimal(10, 2)
+  vendorPayout     Decimal @default(0) @db.Decimal(10, 2)
+  
+  // Items
+  items OrderItem[]
+  
+  // Discounts
+  appliedDiscounts OrderDiscount[]
+  
+  // Notes & tags
+  notes String?
+  tags  String[] @default([])
+  
+  // Tracking
+  trackingNumber   String?
+  trackingCompany  String?
+  shippedAt        DateTime?
+  deliveredAt      DateTime?
+  
+  // Shopify integration
+  shopifyId String?
+  
+  // Returns
+  returns OrderReturn[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("orders")
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId String
+  
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  variantId String
+  
+  quantity Int
+  price    Decimal @db.Decimal(10, 2)
+  total    Decimal @db.Decimal(10, 2)
+  
+  // Product snapshot at time of order
+  productTitle   String
+  variantTitle   String
+  sku           String?
+  
+  // Fulfillment
+  fulfillmentStatus FulfillmentStatus @default(UNFULFILLED)
+  
+  @@map("order_items")
+}
+
+model OrderReturn {
+  id      String @id @default(cuid())
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId String
+  
+  reason       String
+  status       ReturnStatus @default(REQUESTED)
+  refundAmount Decimal      @db.Decimal(10, 2)
+  
+  // Items being returned
+  items Json // Array of {orderItemId, quantity, reason}
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("order_returns")
+}
+
+// ============================================================================
+// DISCOUNTS & PROMOTIONS
+// ============================================================================
+
+model Discount {
+  id       String @id @default(cuid())
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String
+  
+  title       String
+  code        String @unique
+  description String?
+  
+  // Discount type
+  type        DiscountType
+  value       Decimal      @db.Decimal(10, 2)
+  
+  // Usage limits
+  usageLimit       Int?
+  usageCount       Int     @default(0)
+  customerUsageLimit Int? @default(1)
+  
+  // Conditions
+  minimumAmount    Decimal? @db.Decimal(10, 2)
+  eligibleProducts Json?    @default("[]") // Array of product IDs
+  
+  // Validity
+  startsAt DateTime
+  endsAt   DateTime?
+  
+  // Status
+  isActive Boolean @default(true)
+  
+  // Applied orders
+  appliedOrders OrderDiscount[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("discounts")
+}
+
+model OrderDiscount {
+  id         String   @id @default(cuid())
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId    String
+  discount   Discount @relation(fields: [discountId], references: [id], onDelete: Cascade)
+  discountId String
+  
+  amount Decimal @db.Decimal(10, 2)
+  
+  @@unique([orderId, discountId])
+  @@map("order_discounts")
+}
+
+// ============================================================================
+// CSV IMPORT/EXPORT SYSTEM
+// ============================================================================
+
+model ImportJob {
+  id       String @id @default(cuid())
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String
+  
+  filename String
+  fileUrl  String
+  fileSize Int
+  
+  type   ImportType
+  status ImportStatus @default(PENDING)
+  
+  // Processing details
+  totalRows     Int @default(0)
+  processedRows Int @default(0)
+  successRows   Int @default(0)
+  errorRows     Int @default(0)
+  
+  // Column mapping
+  columnMapping Json @default("{}")
+  
+  // Results
+  errorLog     Json? // Array of errors with row numbers
+  downloadUrl  String? // URL to download results/errors
+  
+  // Scheduling (for recurring imports)
+  isRecurring Boolean @default(false)
+  cronExpression String?
+  nextRunAt      DateTime?
+  
+  // Processing logs
+  logs ImportLog[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  completedAt DateTime?
+  
+  @@map("import_jobs")
+}
+
+model ImportLog {
+  id        String    @id @default(cuid())
+  importJob ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+  importJobId String
+  
+  level   LogLevel
+  message String
+  data    Json?
+  
+  createdAt DateTime @default(now())
+  
+  @@map("import_logs")
+}
+
+// ============================================================================
+// AI ASSISTANT & CHAT
+// ============================================================================
+
+model ChatSession {
+  id       String @id @default(cuid())
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId   String
+  
+  title     String?
+  isActive  Boolean @default(true)
+  
+  messages ChatMessage[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId String
+  
+  role    MessageRole
+  content String
+  
+  // Function calls (for AI assistant)
+  functionCall Json?
+  
+  // Attachments
+  attachments Json? @default("[]")
+  
+  createdAt DateTime @default(now())
+  
+  @@map("chat_messages")
+}
+
+// ============================================================================
+// ANALYTICS & BUSINESS INTELLIGENCE
+// ============================================================================
+
+model Analytics {
+  id       String @id @default(cuid())
+  vendor   Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId String
+  
+  date     DateTime @db.Date
+  
+  // Sales metrics
+  revenue          Decimal @default(0) @db.Decimal(10, 2)
+  orders           Int     @default(0)
+  averageOrderValue Decimal @default(0) @db.Decimal(10, 2)
+  
+  // Customer metrics
+  newCustomers      Int @default(0)
+  returningCustomers Int @default(0)
+  
+  // Product metrics
+  topSellingProducts Json @default("[]")
+  
+  // Traffic metrics (if applicable)
+  sessions    Int @default(0)
+  pageViews   Int @default(0)
+  conversionRate Decimal @default(0) @db.Decimal(5, 4)
+  
+  createdAt DateTime @default(now())
+  
+  @@unique([vendorId, date])
+  @@map("analytics")
+}
+
+// ============================================================================
+// AUDIT & SYSTEM LOGS
+// ============================================================================
+
+model AuditLog {
+  id       String @id @default(cuid())
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId   String
+  
+  action      String // create, update, delete, etc.
+  resource    String // product, order, customer, etc.
+  resourceId  String
+  changes     Json? // before/after values
+  
+  ipAddress   String?
+  userAgent   String?
+  
+  createdAt DateTime @default(now())
+  
+  @@map("audit_logs")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum UserRole {
+  ADMIN
+  VENDOR
+  STAFF
+}
+
+enum BusinessType {
+  INDIVIDUAL
+  COMPANY
+  PARTNERSHIP
+  CORPORATION
+}
+
+enum PermissionModule {
+  DASHBOARD
+  PRODUCTS
+  ORDERS
+  CUSTOMERS
+  ANALYTICS
+  MARKETING
+  SETTINGS
+  AI_ASSISTANT
+  IMPORT_EXPORT
+}
+
+enum PermissionAction {
+  VIEW
+  CREATE
+  UPDATE
+  DELETE
+  EXPORT
+  IMPORT
+}
+
+enum SubscriptionPlan {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+  UNPAID
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum WeightUnit {
+  GRAMS
+  KILOGRAMS
+  OUNCES
+  POUNDS
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum FulfillmentStatus {
+  UNFULFILLED
+  PARTIAL
+  FULFILLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIALLY_PAID
+  REFUNDED
+  PARTIALLY_REFUNDED
+  FAILED
+}
+
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  RECEIVED
+  REFUNDED
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  FREE_SHIPPING
+  BUY_X_GET_Y
+}
+
+enum ImportType {
+  PRODUCTS
+  CUSTOMERS
+  ORDERS
+  INVENTORY
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum LogLevel {
+  INFO
+  WARNING
+  ERROR
+  DEBUG
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
